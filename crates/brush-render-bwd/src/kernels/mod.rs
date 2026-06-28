@@ -10,4 +10,5 @@
 )]
 
 pub mod project_backwards;
+pub mod project_bwd_ir;
 pub mod rasterize_backwards;

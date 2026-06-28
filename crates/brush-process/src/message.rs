@@ -35,6 +35,24 @@ pub enum TrainMessage {
         avg_psnr: f32,
         avg_ssim: f32,
     },
+    /// IR training phase has started (after RGB converged).
+    #[allow(unused)]
+    IrPhaseStarted {
+        total_iters: u32,
+    },
+    /// IR training step progress.
+    #[allow(unused)]
+    IrTrainStep {
+        iter: u32,
+        total_elapsed: web_time::Duration,
+        ir_loss: f32,
+    },
+    /// IR refinement step.
+    #[allow(unused)]
+    IrRefineStep {
+        cur_splat_count: u32,
+        iter: u32,
+    },
     DoneTraining,
 }
 

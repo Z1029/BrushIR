@@ -39,12 +39,14 @@ async fn renders_at_all() {
     let sh_coeffs = Tensor::<3>::ones([num_points, 1, 3], &device);
     let raw_opacity = Tensor::<1>::zeros([num_points], &device);
 
+    let raw_ir = Tensor::<1>::zeros([num_points], &device);
     let splats = Splats::from_tensor_data(
         means,
         quats,
         log_scales,
         sh_coeffs,
         raw_opacity,
+        raw_ir,
         SplatRenderMode::Default,
     );
     let (output, _render_aux) =
@@ -99,12 +101,14 @@ async fn renders_many_splats() {
     // Some visible, some not
     let raw_opacity = Tensor::<1>::random([num_splats], Distribution::Uniform(-2.0, 2.0), &device);
 
+    let raw_ir = Tensor::<1>::zeros([num_splats], &device);
     let splats = Splats::from_tensor_data(
         means,
         quats,
         log_scales,
         sh_coeffs,
         raw_opacity,
+        raw_ir,
         SplatRenderMode::Default,
     );
     let (output, aux) =
@@ -268,7 +272,8 @@ fn scene_to_splats(scene: &Scene, device: &burn::tensor::Device) -> Splats {
     )
     .reshape([n, 1, 3]);
     let opac = Tensor::<1>::from_floats(scene.raw_opacity.as_slice(), device);
-    Splats::from_tensor_data(means, quats, log_scales, sh, opac, SplatRenderMode::Default)
+    let raw_ir = Tensor::<1>::zeros([n], device);
+    Splats::from_tensor_data(means, quats, log_scales, sh, opac, raw_ir, SplatRenderMode::Default)
 }
 
 async fn render_scene(
@@ -473,6 +478,7 @@ async fn renders_large_rotated_splats() {
     let sh_coeffs = Tensor::<3>::ones([num_splats, 1, 3], &device) * 0.5;
     // Low per-splat opacity so T doesn't hit the early-out for many splats.
     let raw_opacity = Tensor::<1>::ones([num_splats], &device) * -4.0;
+    let raw_ir = Tensor::<1>::zeros([num_splats], &device);
 
     let splats = Splats::from_tensor_data(
         means,
@@ -480,6 +486,7 @@ async fn renders_large_rotated_splats() {
         log_scales,
         sh_coeffs,
         raw_opacity,
+        raw_ir,
         SplatRenderMode::Default,
     );
     let (output, _aux) =
@@ -536,6 +543,7 @@ async fn renders_many_large_splats_stress() {
     let sh_coeffs =
         Tensor::<3>::random([num_splats, 1, 3], Distribution::Uniform(0.0, 1.0), &device);
     let raw_opacity = Tensor::<1>::random([num_splats], Distribution::Uniform(-2.0, 2.0), &device);
+    let raw_ir = Tensor::<1>::zeros([num_splats], &device);
 
     let splats = Splats::from_tensor_data(
         means,
@@ -543,6 +551,7 @@ async fn renders_many_large_splats_stress() {
         log_scales,
         sh_coeffs,
         raw_opacity,
+        raw_ir,
         SplatRenderMode::Default,
     );
     let (output, _aux) =
@@ -607,12 +616,14 @@ async fn render_panics_loudly_on_nan_positions() {
     let log_scales = Tensor::<2>::zeros([n, 3], &device);
     let sh_coeffs = Tensor::<3>::ones([n, 1, 3], &device);
     let raw_opacity = Tensor::<1>::zeros([n], &device);
+    let raw_ir = Tensor::<1>::zeros([n], &device);
     let splats = Splats::from_tensor_data(
         means,
         quats,
         log_scales,
         sh_coeffs,
         raw_opacity,
+        raw_ir,
         SplatRenderMode::Default,
     );
     let _ = render_splats(splats, &cam, img_size, Vec3::ZERO, None, TextureMode::Float).await;
@@ -640,6 +651,7 @@ async fn zero_splats_renders_background() {
         Tensor::<2>::zeros([0, 4], &device),
         Tensor::<2>::zeros([0, 3], &device),
         Tensor::<3>::zeros([0, 1, 3], &device),
+        Tensor::<1>::zeros([0], &device),
         Tensor::<1>::zeros([0], &device),
         SplatRenderMode::Default,
     );
@@ -812,6 +824,7 @@ async fn render_smoke_with_model(model: CameraModel) {
         Tensor::<3>::random([num_splats, 1, 3], Distribution::Uniform(0.0, 1.0), &device);
     // Most splats visible (raw opacity 1..3).
     let raw_opacity = Tensor::<1>::random([num_splats], Distribution::Uniform(1.0, 3.0), &device);
+    let raw_ir = Tensor::<1>::zeros([num_splats], &device);
 
     let splats = Splats::from_tensor_data(
         means,
@@ -819,6 +832,7 @@ async fn render_smoke_with_model(model: CameraModel) {
         log_scales,
         sh_coeffs,
         raw_opacity,
+        raw_ir,
         SplatRenderMode::Default,
     );
     let (output, _aux) =

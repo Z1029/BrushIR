@@ -18,8 +18,8 @@ use burn_wgpu::WgpuRuntime;
 use glam::Vec3;
 
 use crate::{
-    RenderAuxInner, SplatOps, camera::Camera, gaussian_splats::SplatRenderMode,
-    render_aux::RenderOutput, wgpu_kind,
+    RenderAuxInner, RenderIrOutput, SplatOps, camera::Camera,
+    gaussian_splats::SplatRenderMode, render_aux::RenderOutput, wgpu_kind,
 };
 
 /// Inner Wgpu autodiff backend (same as `Autodiff<burn::backend::Wgpu>`).
@@ -376,6 +376,180 @@ impl SplatOps for Fusion<MainBackendBase> {
         ] = outputs;
 
         RenderOutput {
+            out_img,
+            aux: RenderAuxInner {
+                num_visible: out.aux.num_visible,
+                num_intersections: out.aux.num_intersections,
+                visible,
+                max_radius,
+                tile_offsets,
+                img_size: out.aux.img_size,
+            },
+            projected_splats,
+            compact_gid_from_isect,
+            project_uniforms: out.project_uniforms,
+            global_from_compact_gid,
+        }
+    }
+
+    async fn render_ir(
+        camera: &Camera,
+        img_size: glam::UVec2,
+        transforms: FloatTensor<Self>,
+        raw_ir: FloatTensor<Self>,
+        raw_opacities: FloatTensor<Self>,
+        render_mode: SplatRenderMode,
+        background: Vec3,
+    ) -> RenderIrOutput<Self> {
+        let client = transforms.client.clone();
+
+        let base_transforms = client
+            .clone()
+            .resolve_tensor_float::<MainBackendBase>(transforms);
+        let base_raw_ir = client
+            .clone()
+            .resolve_tensor_float::<MainBackendBase>(raw_ir);
+        let base_raw_opac = client
+            .clone()
+            .resolve_tensor_float::<MainBackendBase>(raw_opacities);
+
+        let out = MainBackendBase::render_ir(
+            camera,
+            img_size,
+            base_transforms,
+            base_raw_ir,
+            base_raw_opac,
+            render_mode,
+            background,
+        )
+        .await;
+
+        #[derive(Debug)]
+        struct BindIrOp {
+            desc: CustomOpIr,
+            out_img: FloatTensor<MainBackendBase>,
+            visible: FloatTensor<MainBackendBase>,
+            max_radius: FloatTensor<MainBackendBase>,
+            projected_splats: FloatTensor<MainBackendBase>,
+            tile_offsets: IntTensor<MainBackendBase>,
+            compact_gid_from_isect: IntTensor<MainBackendBase>,
+            global_from_compact_gid: IntTensor<MainBackendBase>,
+        }
+
+        impl Operation<FusionCubeRuntime<WgpuRuntime>> for BindIrOp {
+            fn execute(
+                &self,
+                h: &mut HandleContainer<FusionHandle<FusionCubeRuntime<WgpuRuntime>>>,
+            ) {
+                let (_, outputs) = self.desc.as_fixed::<0, 7>();
+                let [
+                    out_img,
+                    visible,
+                    max_radius,
+                    projected_splats,
+                    tile_offsets,
+                    compact_gid_from_isect,
+                    global_from_compact_gid,
+                ] = outputs;
+
+                h.register_float_tensor::<MainBackendBase>(&out_img.id, self.out_img.clone());
+                h.register_float_tensor::<MainBackendBase>(&visible.id, self.visible.clone());
+                h.register_float_tensor::<MainBackendBase>(&max_radius.id, self.max_radius.clone());
+                h.register_float_tensor::<MainBackendBase>(
+                    &projected_splats.id,
+                    self.projected_splats.clone(),
+                );
+                h.register_int_tensor::<MainBackendBase>(
+                    &tile_offsets.id,
+                    self.tile_offsets.clone(),
+                );
+                h.register_int_tensor::<MainBackendBase>(
+                    &compact_gid_from_isect.id,
+                    self.compact_gid_from_isect.clone(),
+                );
+                h.register_int_tensor::<MainBackendBase>(
+                    &global_from_compact_gid.id,
+                    self.global_from_compact_gid.clone(),
+                );
+            }
+        }
+
+        let out_img_ir = TensorIr::uninit(
+            client.create_empty_handle(),
+            out.out_img.shape(),
+            DType::F32,
+        );
+        let visible_ir = TensorIr::uninit(
+            client.create_empty_handle(),
+            out.aux.visible.shape(),
+            DType::F32,
+        );
+        let max_radius_ir = TensorIr::uninit(
+            client.create_empty_handle(),
+            out.aux.max_radius.shape(),
+            DType::F32,
+        );
+        let projected_splats_ir = TensorIr::uninit(
+            client.create_empty_handle(),
+            out.projected_splats.shape(),
+            DType::F32,
+        );
+        let tile_offsets_ir = TensorIr::uninit(
+            client.create_empty_handle(),
+            out.aux.tile_offsets.shape(),
+            DType::U32,
+        );
+        let compact_gid_from_isect_ir = TensorIr::uninit(
+            client.create_empty_handle(),
+            out.compact_gid_from_isect.shape(),
+            DType::U32,
+        );
+        let global_from_compact_gid_ir = TensorIr::uninit(
+            client.create_empty_handle(),
+            out.global_from_compact_gid.shape(),
+            DType::U32,
+        );
+
+        let stream = StreamId::current();
+        let desc = CustomOpIr::new(
+            "render_ir_bind",
+            &[],
+            &[
+                out_img_ir,
+                visible_ir,
+                max_radius_ir,
+                projected_splats_ir,
+                tile_offsets_ir,
+                compact_gid_from_isect_ir,
+                global_from_compact_gid_ir,
+            ],
+        );
+        let op = BindIrOp {
+            desc: desc.clone(),
+            out_img: out.out_img,
+            visible: out.aux.visible,
+            max_radius: out.aux.max_radius,
+            projected_splats: out.projected_splats,
+            tile_offsets: out.aux.tile_offsets,
+            compact_gid_from_isect: out.compact_gid_from_isect,
+            global_from_compact_gid: out.global_from_compact_gid,
+        };
+
+        let outputs = client
+            .register(stream, OperationIr::Custom(desc), op)
+            .outputs();
+
+        let [
+            out_img,
+            visible,
+            max_radius,
+            projected_splats,
+            tile_offsets,
+            compact_gid_from_isect,
+            global_from_compact_gid,
+        ] = outputs;
+
+        RenderIrOutput {
             out_img,
             aux: RenderAuxInner {
                 num_visible: out.aux.num_visible,

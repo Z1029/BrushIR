@@ -21,6 +21,8 @@ pub struct TrainingPanel {
     export_channel: (UnboundedSender<Error>, UnboundedReceiver<Error>),
     training_done: bool,
     lod_progress: Option<(u32, u32)>,
+    ir_progress: Option<(u32, u32)>,
+    ir_loss: Option<f32>,
     // Owns the export worker thread. One Actor for the whole panel
     // lifetime; export clicks just queue more work on it.
     export_actor: Actor,
@@ -39,6 +41,9 @@ impl Default for TrainingPanel {
             training_done: false,
             lod_progress: None,
             export_actor: Actor::new("training-panel-export"),
+
+            ir_progress: None,
+            ir_loss: None,
         }
     }
 }
@@ -53,6 +58,8 @@ impl TrainingPanel {
         self.manual_export_iters.clear();
         self.training_done = false;
         self.lod_progress = None;
+        self.ir_progress = None;
+        self.ir_loss = None;
     }
 
     fn on_train_message(&mut self, message: &TrainMessage) {
@@ -82,9 +89,22 @@ impl TrainingPanel {
                 }
                 self.last_train_step = Some((*total_elapsed, *iter));
             }
+            TrainMessage::IrPhaseStarted { total_iters } => {
+                self.ir_progress = Some((0, *total_iters));
+                self.ir_loss = None;
+            }
+            TrainMessage::IrTrainStep { iter, ir_loss, .. } => {
+                if let Some((_, total)) = &mut self.ir_progress {
+                    self.ir_progress = Some((*iter, *total));
+                }
+                self.ir_loss = Some(*ir_loss);
+            }
+            TrainMessage::IrRefineStep { .. } => {}
             TrainMessage::DoneTraining => {
                 self.training_done = true;
                 self.lod_progress = None;
+                self.ir_progress = None;
+                self.ir_loss = None;
             }
             _ => {}
         }
@@ -409,5 +429,43 @@ impl AppPane for TrainingPanel {
             egui::FontId::new(12.0, egui::FontFamily::Proportional),
             text_color,
         );
+
+        // IR training phase progress
+        if let Some((ir_iter, ir_total)) = self.ir_progress
+            && ir_total > 0
+        {
+            ui.add_space(8.0);
+            let ir_progress = ir_iter as f32 / ir_total as f32;
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("IR Training")
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(200, 120, 60)),
+                );
+                if let Some(loss) = self.ir_loss {
+                    ui.label(
+                        RichText::new(format!("loss: {:.6}", loss))
+                            .size(11.0)
+                            .color(egui::Color32::from_rgb(140, 140, 140)),
+                    );
+                }
+            });
+
+            let ir_bar = ui.add(
+                egui::ProgressBar::new(ir_progress)
+                    .desired_width(ui.available_width().max(1.0))
+                    .desired_height(16.0)
+                    .fill(egui::Color32::from_rgb(200, 120, 60)),
+            );
+
+            ui.painter().text(
+                egui::pos2(ir_bar.rect.right() - padding, ir_bar.rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                format!("{ir_iter}/{ir_total}"),
+                egui::FontId::new(11.0, egui::FontFamily::Proportional),
+                egui::Color32::WHITE,
+            );
+        }
     }
 }

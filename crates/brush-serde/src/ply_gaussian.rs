@@ -97,6 +97,10 @@ pub struct PlyGaussian {
     pub(crate) green: Option<f32>,
     #[serde(default, alias = "b", skip_serializing, deserialize_with = "de_quant")]
     pub(crate) blue: Option<f32>,
+
+    /// IR grayscale intensity [0..1]. Post-sigmoid. Optional for backward compat.
+    #[serde(default)]
+    pub(crate) ir_intensity: Option<f32>,
 }
 
 // Generate the sh_rest_coeffs() method using proc macro

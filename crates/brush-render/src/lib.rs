@@ -9,7 +9,7 @@ use glam::Vec3;
 
 use crate::gaussian_splats::SplatRenderMode;
 pub use crate::gaussian_splats::{Splats, TextureMode, render_splats};
-pub use crate::render_aux::{RenderAux, RenderAuxInner, RenderOutput};
+pub use crate::render_aux::{RenderAux, RenderAuxInner, RenderIrOutput, RenderOutput};
 
 pub mod burn_glue;
 #[doc(hidden)]
@@ -76,6 +76,21 @@ pub trait SplatOps: Backend {
         background: Vec3,
         pass: gaussian_splats::RasterPass,
     ) -> impl Future<Output = RenderOutput<Self>>;
+
+    /// Render gaussian splats to an IR image (grayscale from `raw_ir`).
+    /// Uses the same geometry pipeline but reads `raw_ir` instead of SH
+    /// coefficients for color. The backward is handled separately by
+    /// `brush-render-bwd`.
+    #[allow(clippy::too_many_arguments)]
+    fn render_ir(
+        camera: &Camera,
+        img_size: glam::UVec2,
+        transforms: FloatTensor<Self>,
+        raw_ir: FloatTensor<Self>,
+        raw_opacities: FloatTensor<Self>,
+        render_mode: SplatRenderMode,
+        background: Vec3,
+    ) -> impl Future<Output = RenderIrOutput<Self>>;
 }
 
 #[derive(

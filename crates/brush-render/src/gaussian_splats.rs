@@ -63,6 +63,9 @@ pub struct Splats {
     pub transforms: Param<Tensor<2>>,
     pub sh_coeffs: Param<Tensor<3>>,
     pub raw_opacities: Param<Tensor<1>>,
+    /// Per-splat IR intensity (pre-sigmoid). `[N]`. Trained in Stage 2 after
+    /// RGB converges. Frozen during Stage 1 (RGB) training.
+    pub raw_ir: Param<Tensor<1>>,
     #[module(skip)]
     pub render_mip: bool,
     /// Optional per-splat world-space scale floor (Mip-Splatting's 3D filter).
@@ -132,13 +135,49 @@ impl Splats {
         );
         let raw_opacities =
             Tensor::from_data(TensorData::new(opac_data, [n_splats]), device).require_grad();
+        let raw_ir = Tensor::from_data(
+            TensorData::new(vec![0.0f32; n_splats], [n_splats]),
+            device,
+        )
+        .require_grad();
         Self::from_tensor_data(
             means_tensor,
             rotations,
             log_scales,
             sh_coeffs,
             raw_opacities,
+            raw_ir,
             mode,
+        )
+    }
+
+    /// Like `from_raw` but accepts explicit raw IR values instead of defaulting to 0.0.
+    pub fn from_raw_with_ir(
+        pos_data: Vec<f32>,
+        rot_data: Vec<f32>,
+        scale_data: Vec<f32>,
+        coeffs_data: Vec<f32>,
+        opac_data: Vec<f32>,
+        ir_data: Vec<f32>,
+        mode: SplatRenderMode,
+        device: &Device,
+    ) -> Self {
+        let _ = trace_span!("Splats::from_raw_with_ir").entered();
+        let n_splats = pos_data.len() / 3;
+        let log_scales = Tensor::from_data(TensorData::new(scale_data, [n_splats, 3]), device);
+        let means_tensor = Tensor::from_data(TensorData::new(pos_data, [n_splats, 3]), device);
+        let rotations = Tensor::from_data(TensorData::new(rot_data, [n_splats, 4]), device);
+        let n_coeffs = coeffs_data.len() / n_splats;
+        let sh_coeffs = Tensor::from_data(
+            TensorData::new(coeffs_data, [n_splats, n_coeffs / 3, 3]),
+            device,
+        );
+        let raw_opacities =
+            Tensor::from_data(TensorData::new(opac_data, [n_splats]), device).require_grad();
+        let raw_ir =
+            Tensor::from_data(TensorData::new(ir_data, [n_splats]), device).require_grad();
+        Self::from_tensor_data(
+            means_tensor, rotations, log_scales, sh_coeffs, raw_opacities, raw_ir, mode,
         )
     }
 
@@ -168,6 +207,7 @@ impl Splats {
         log_scales: Tensor<2>,
         sh_coeffs: Tensor<3>,
         raw_opacity: Tensor<1>,
+        raw_ir: Tensor<1>,
         mode: SplatRenderMode,
     ) -> Self {
         assert_eq!(means.dims()[1], 3, "Means must be 3D");
@@ -180,6 +220,7 @@ impl Splats {
             transforms: Param::initialized(ParamId::new(), transforms.detach().require_grad()),
             sh_coeffs: Param::initialized(ParamId::new(), sh_coeffs.detach().require_grad()),
             raw_opacities: Param::initialized(ParamId::new(), raw_opacity.detach().require_grad()),
+            raw_ir: Param::initialized(ParamId::new(), raw_ir.detach().require_grad()),
             render_mip: mode == SplatRenderMode::Mip,
             min_scale: None,
         }
@@ -221,6 +262,12 @@ impl Splats {
             }
             None => sigmoid(self.raw_opacities.val()),
         }
+    }
+
+    /// Post-activation IR intensity in [0, 1]. Trained in Stage 2 after RGB
+    /// geometry has converged.
+    pub fn ir_intensities(&self) -> Tensor<1> {
+        sigmoid(self.raw_ir.val())
     }
 
     /// World-space scales, with the 3D-filter floor folded in when `min_scale`

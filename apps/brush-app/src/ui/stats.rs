@@ -144,6 +144,9 @@ impl AppPane for StatsPanel {
                 } => {
                     self.last_eval = Some(format!("{avg_psnr:.2} PSNR, {avg_ssim:.3} SSIM"));
                 }
+                TrainMessage::IrPhaseStarted { .. } => {}
+                TrainMessage::IrTrainStep { .. } => {}
+                TrainMessage::IrRefineStep { .. } => {}
                 TrainMessage::DoneTraining => {
                     self.training_complete = true;
                 }

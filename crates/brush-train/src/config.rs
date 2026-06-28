@@ -129,6 +129,23 @@ pub struct TrainConfig {
     /// estimated from the camera spacing (with a 1m minimum).
     #[arg(long, help_heading = "Training options")]
     pub random_init_scene_scale: Option<f32>,
+
+    // -----------------------------------------------------------------------
+    // IR (infrared) training options
+    // -----------------------------------------------------------------------
+
+    /// Number of IR-only training iterations after RGB training (0 = disabled).
+    #[arg(long, help_heading = "IR options", default_value = "0")]
+    pub ir_iters: u32,
+
+    /// Learning rate for IR intensity parameter.
+    #[arg(long, help_heading = "IR options", default_value = "0.01")]
+    pub lr_ir: f64,
+
+    /// Refinement interval during IR training (0 = no refinement).
+    #[arg(long, help_heading = "IR options", default_value = "0")]
+    pub ir_refine_every: u32,
+
 }
 
 impl Default for TrainConfig {
@@ -139,6 +156,10 @@ impl Default for TrainConfig {
 
 impl TrainConfig {
     pub fn total_iters(&self) -> u32 {
+        self.total_train_iters + self.lod_levels * self.lod_refine_steps + self.ir_iters
+    }
+
+    pub fn total_iters_without_ir(&self) -> u32 {
         self.total_train_iters + self.lod_levels * self.lod_refine_steps
     }
 }

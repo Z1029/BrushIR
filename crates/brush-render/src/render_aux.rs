@@ -9,6 +9,21 @@ use burn::{
 
 use crate::shaders::helpers::ProjectUniforms;
 
+/// IR render output (analogous to [`RenderOutput`] but for IR rendering).
+/// Holds backend primitives needed by the forward pass only; the backward
+/// pass has its own simplified machinery.
+#[derive(Debug, Clone, ExtensionType)]
+pub struct RenderIrOutput<B: Backend> {
+    pub out_img: FloatTensor<B>,
+    #[extension_type]
+    pub aux: RenderAuxInner<B>,
+    // State needed by the backward pass; non-diff callers can ignore these.
+    pub projected_splats: FloatTensor<B>,
+    pub compact_gid_from_isect: IntTensor<B>,
+    pub project_uniforms: ProjectUniforms,
+    pub global_from_compact_gid: IntTensor<B>,
+}
+
 /// Internal render output used by kernel impls. Holds backend primitives.
 ///
 /// `ExtensionType` lets the `#[backend_extension]`-generated `Dispatch` impl

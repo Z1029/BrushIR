@@ -1,10 +1,13 @@
-use crate::{Dataset, config::LoadDatasetConfig, scene::SceneView};
+use crate::{Dataset, config::LoadDataseConfig, load_image::LoadImage, scene::SceneView};
+use brush_render::camera::Camera;
 use brush_serde::{DeserializeError, SplatMessage, load_splat_from_ply};
 
 use brush_vfs::BrushVfs;
+use glam::Vec3;
 use image::ImageError;
 use itertools::{Either, Itertools};
 use std::{path::Path, sync::Arc};
+use std::cell::RefCell;
 
 pub mod colmap;
 pub mod nerfstudio;
@@ -55,7 +58,7 @@ pub enum DatasetError {
 
 pub async fn load_dataset(
     vfs: Arc<BrushVfs>,
-    load_args: &LoadDatasetConfig,
+    load_args: &LoadDataseConfig,
 ) -> Result<DatasetLoadResult, DatasetError> {
     let mut dataset = colmap::load_dataset(vfs.clone(), load_args).await;
 
@@ -104,11 +107,107 @@ pub async fn load_dataset(
         result.init_splat
     };
 
+    let mut dataset = result.dataset;
+
+    // Attach IR images to each view if ir_subdir is configured
+    if let Some(ir_subdir) = &load_args.ir_subdir {
+        let ir_translation = if load_args.ir_translation_offset.len() >= 3 {
+            Vec3::new(
+                load_args.ir_translation_offset[0],
+                load_args.ir_translation_offset[1],
+                load_args.ir_translation_offset[2],
+            )
+        } else {
+            Vec3::ZERO
+        };
+        let ir_rotation = if load_args.ir_rotation_offset.len() >= 4 {
+            glam::Quat::from_array([
+                load_args.ir_rotation_offset[0],
+                load_args.ir_rotation_offset[1],
+                load_args.ir_rotation_offset[2],
+                load_args.ir_rotation_offset[3],
+            ])
+        } else {
+            glam::Quat::IDENTITY
+        };
+
+        // stat ir imgs loading stage
+        let ir_loaded_count = RefCell::new(0);
+        let ir_missing_count = RefCell::new(0);
+
+        let attach_ir = |views: &mut [SceneView]| {
+            log::info!("Loading IR dataset from subdirectory: {:?}", ir_subdir);
+
+            for view in views.iter_mut() {
+                let ir_path = find_ir_path(&vfs, view.image.path(), ir_subdir);
+                if let Some(ir_path) = ir_path {
+                    *ir_loaded_count.borrow_mut() += 1;
+                    view.ir_image = Some(LoadImage::new(
+                        vfs.clone(),
+                        ir_path.to_path_buf(),
+                        None,
+                        load_args.max_resolution,
+                        Some(brush_render::AlphaMode::Masked),
+                    ));
+                    view.ir_camera = Some(compute_ir_camera(&view.camera, ir_translation, ir_rotation));
+                } else {
+                    *ir_missing_count.borrow_mut() += 1;
+                    log::warn!(
+                        "IR image not found for '{}' in subdirectory '{}'",
+                        view.image.path().display(),
+                        ir_subdir
+                    );
+                }
+            }
+        };
+
+        let loaded = *ir_loaded_count.borrow();
+        let missing = *ir_missing_count.borrow();
+        log::info!(
+            "IR loading completed: {} loaded, {} missing (total: {})",
+            loaded,
+            missing,
+            loaded + missing
+        );
+
+        attach_ir(&mut Arc::make_mut(&mut dataset.train.views));
+        if let Some(ref mut eval_scene) = dataset.eval {
+            attach_ir(&mut Arc::make_mut(&mut eval_scene.views));
+        }
+    }
+
     Ok(DatasetLoadResult {
         init_splat,
-        dataset: result.dataset,
+        dataset,
         warnings: result.warnings,
     })
+}
+
+/// Find the IR image path corresponding to an RGB image path in the ir_subdir.
+/// E.g. `rgb/frame_01.jpg` → `ir/frame_01.jpg` or `imgs/ir/frame_01.jpg` if that file exists in VFS.
+fn find_ir_path<'a>(vfs: &'a BrushVfs, rgb_path: &Path, ir_subdir: &str) -> Option<&'a Path> {
+    let file_name = rgb_path.file_name()?;
+    vfs.iter_files().find(|candidate| {
+        if candidate.file_name() != Some(file_name) {
+            return false;
+        }
+        // ir_subdir can be any component in the candidate's parent path (not only the first)
+        candidate.parent().is_some_and(|parent| {
+            parent
+                .components()
+                .any(|c| c.as_os_str().to_str() == Some(ir_subdir))
+        })
+    })
+}
+
+/// Compute the IR camera from an RGB camera and a fixed offset.
+/// The IR camera shares the same intrinsics but has an extrinsics offset.
+fn compute_ir_camera(rgb_camera: &Camera, translation: Vec3, rotation: glam::Quat) -> Camera {
+    Camera {
+        position: rgb_camera.position + rgb_camera.rotation * translation,
+        rotation: (rgb_camera.rotation * rotation).normalize(),
+        ..rgb_camera.clone()
+    }
 }
 
 /// Resolve a bare image name (as stored by colmap / `RealityCapture`, which only

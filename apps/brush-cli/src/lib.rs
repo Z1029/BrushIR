@@ -149,7 +149,8 @@ pub async fn run_cli_ui(
 
     let train_progress = {
         let tc = &train_stream_config.train_config;
-        let bar = ProgressBar::new(tc.total_iters() as u64)
+        let total = tc.total_iters() + tc.ir_iters;
+        let bar = ProgressBar::new(total as u64)
         .with_style(
             ProgressStyle::with_template(
                 "[{elapsed}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} ({per_sec}, {eta} remaining)",
@@ -263,6 +264,20 @@ pub async fn run_cli_ui(
                         "Eval iter {iter}: PSNR {avg_psnr}, ssim {avg_ssim}"
                     ));
                 }
+                TrainMessage::IrPhaseStarted { .. } => {
+                    main_spinner.set_message("IR Training");
+                    let tc = &train_stream_config.train_config;
+                    let rgb_total = tc.total_iters() as u64;
+                    train_progress.set_position(rgb_total);
+                    train_progress.set_length(rgb_total + tc.ir_iters as u64);
+                }
+                TrainMessage::IrTrainStep { iter, ir_loss, .. } => {
+                    let tc = &train_stream_config.train_config;
+                    let rgb_total = tc.total_iters();
+                    train_progress.set_position(rgb_total as u64 + iter as u64);
+                    log::info!("IR step {iter}, loss: {ir_loss:.6}");
+                }
+                TrainMessage::IrRefineStep { .. } => {}
                 TrainMessage::DoneTraining => {}
             },
             ProcessMessage::DoneLoading => {

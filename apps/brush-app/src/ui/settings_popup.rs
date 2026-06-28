@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use brush_process::config::TrainStreamConfig;
 use brush_render::AlphaMode;
 use brush_render::gaussian_splats::SplatRenderMode;
-use egui::{Align2, Slider, Ui};
+use egui::{Align2, Slider, TextEdit, Ui};
 use tokio::sync::oneshot::Sender;
 
 pub(crate) struct SettingsPopup {
@@ -252,6 +252,57 @@ pub(crate) fn draw_settings(ui: &mut Ui, args: &mut TrainStreamConfig, enabled: 
             );
         }
     }
+
+    ui.collapsing("Infrared (IR)", |ui| {
+        let tc = &mut args.train_config;
+        let mut ir_enabled = tc.ir_iters > 0;
+        ui.add_enabled(
+            enabled,
+            egui::Checkbox::new(&mut ir_enabled, "Enable IR training"),
+        );
+        if enabled && ir_enabled != (tc.ir_iters > 0) {
+            tc.ir_iters = if ir_enabled { 5000 } else { 0 };
+        }
+        if tc.ir_iters > 0 {
+            slider(ui, &mut tc.ir_iters, 1..=50000, "IR iterations", false, enabled);
+            slider(ui, &mut tc.lr_ir, 1e-7..=1e-1, "IR learning rate", true, enabled);
+            slider(ui, &mut tc.ir_refine_every, 0..=5000, "IR refine interval", false, enabled);
+
+            let lc = &mut args.load_config;
+            ui.label("IR Camera Translation Offset (meters):");
+            let off = &mut lc.ir_translation_offset;
+            if off.len() < 3 {
+                off.resize(3, 0.0);
+            }
+            slider(ui, &mut off[0], -1.0..=1.0, "X", false, enabled);
+            slider(ui, &mut off[1], -1.0..=1.0, "Y", false, enabled);
+            slider(ui, &mut off[2], -1.0..=1.0, "Z", false, enabled);
+
+            ui.label("IR Image Subdirectory:");
+            let mut ir_subdir_str = lc.ir_subdir.clone().unwrap_or_default();
+            ui.add_enabled(
+                enabled,
+                TextEdit::singleline(&mut ir_subdir_str).hint_text("ir"),
+            );
+            if enabled {
+                lc.ir_subdir = if ir_subdir_str.is_empty() {
+                    None
+                } else {
+                    Some(ir_subdir_str)
+                };
+            }
+
+            ui.label("IR Camera Rotation Offset (quaternion):");
+            let rot = &mut lc.ir_rotation_offset;
+            if rot.len() < 4 {
+                rot.resize(4, if rot.is_empty() { 1.0 } else { 0.0 });
+            }
+            slider(ui, &mut rot[0], -1.0..=1.0, "W", false, enabled);
+            slider(ui, &mut rot[1], -1.0..=1.0, "X", false, enabled);
+            slider(ui, &mut rot[2], -1.0..=1.0, "Y", false, enabled);
+            slider(ui, &mut rot[3], -1.0..=1.0, "Z", false, enabled);
+        }
+    });
 
     ui.add_space(16.0);
 

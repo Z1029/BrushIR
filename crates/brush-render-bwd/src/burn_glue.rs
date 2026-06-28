@@ -33,6 +33,8 @@ use burn_fusion::{
 use burn_ir::{CustomOpIr, HandleContainer, OperationIr, OperationOutput, TensorIr};
 use glam::Vec3;
 
+use crate::render_ir_bwd::SplatIrBwdOps;
+
 /// Intermediate gradients from the rasterize backward pass.
 ///
 /// Sparse buffer of shape `[num_visible, 10]`, indexed by `compact_gid`.
@@ -195,6 +197,7 @@ pub fn lift_splats_to_autodiff(splats: Splats) -> Splats {
     let (transforms_id, transforms, _) = splats.transforms.consume();
     let (sh_coeffs_id, sh_coeffs, _) = splats.sh_coeffs.consume();
     let (raw_opacity_id, raw_opacity, _) = splats.raw_opacities.consume();
+    let (raw_ir_id, raw_ir, _) = splats.raw_ir.consume();
     Splats {
         transforms: Param::initialized(transforms_id, lift_to_autodiff(transforms).require_grad()),
         sh_coeffs: Param::initialized(sh_coeffs_id, lift_to_autodiff(sh_coeffs).require_grad()),
@@ -202,6 +205,7 @@ pub fn lift_splats_to_autodiff(splats: Splats) -> Splats {
             raw_opacity_id,
             lift_to_autodiff(raw_opacity).require_grad(),
         ),
+        raw_ir: Param::initialized(raw_ir_id, lift_to_autodiff(raw_ir).require_grad()),
         render_mip: mip,
         // Keep the frozen floor on the inner backend. `#[module(skip)]` fields
         // aren't converted by `.valid()`, so lifting it here would leave an
@@ -561,5 +565,73 @@ impl SplatBwdOps for Fusion<MainBackendBase> {
             v_raw_opac,
             v_refine_weight,
         }
+    }
+}
+
+impl SplatIrBwdOps for Fusion<MainBackendBase> {
+    fn project_bwd_ir(
+        raw_ir: FloatTensor<Self>,
+        global_from_compact_gid: IntTensor<Self>,
+        project_uniforms: ProjectUniforms,
+        v_combined: FloatTensor<Self>,
+    ) -> FloatTensor<Self> {
+        #[derive(Debug)]
+        struct CustomOp {
+            desc: CustomOpIr,
+            project_uniforms: ProjectUniforms,
+        }
+
+        impl Operation<FusionCubeRuntime<WgpuRuntime>> for CustomOp {
+            fn execute(
+                &self,
+                h: &mut HandleContainer<FusionHandle<FusionCubeRuntime<WgpuRuntime>>>,
+            ) {
+                let (inputs, outputs) = self.desc.as_fixed();
+
+                let [raw_ir, global_from_compact_gid, v_combined_in] = inputs;
+                let [v_raw_ir] = outputs;
+
+                let result = <MainBackendBase as SplatIrBwdOps>::project_bwd_ir(
+                    h.get_float_tensor::<MainBackendBase>(raw_ir),
+                    h.get_int_tensor::<MainBackendBase>(global_from_compact_gid),
+                    self.project_uniforms,
+                    h.get_float_tensor::<MainBackendBase>(v_combined_in),
+                );
+
+                h.register_float_tensor::<MainBackendBase>(&v_raw_ir.id, result);
+            }
+        }
+
+        let client = raw_ir.client.clone();
+        let num_points = raw_ir.shape()[0];
+
+        let input_tensors = [raw_ir, global_from_compact_gid, v_combined];
+
+        let outputs = {
+            let v_raw_ir_out = TensorIr::uninit(
+                client.create_empty_handle(),
+                Shape::new([num_points]),
+                DType::F32,
+            );
+            let stream = StreamId::current();
+            let desc = CustomOpIr::new(
+                "project_bwd_ir",
+                &input_tensors.map(|t| t.into_ir()),
+                &[v_raw_ir_out],
+            );
+            client
+                .register(
+                    stream,
+                    OperationIr::Custom(desc.clone()),
+                    CustomOp {
+                        desc,
+                        project_uniforms,
+                    },
+                )
+                .outputs()
+        };
+
+        let [v_raw_ir] = outputs;
+        v_raw_ir
     }
 }

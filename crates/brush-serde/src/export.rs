@@ -36,6 +36,8 @@ struct DynamicPlyGaussian {
     f_dc_1: f32,
     f_dc_2: f32,
     rest_coeffs: Vec<f32>,
+    /// IR grayscale intensity [0..1] (post-sigmoid). 0.5 if not used.
+    ir_intensity: f32,
 }
 
 impl Serialize for DynamicPlyGaussian {
@@ -43,8 +45,8 @@ impl Serialize for DynamicPlyGaussian {
     where
         S: Serializer,
     {
-        // Calculate total number of fields: 11 core + 3 DC + rest_coeffs
-        let field_count = 14 + self.rest_coeffs.len();
+        // Calculate total number of fields: 11 core + 3 DC + rest_coeffs + 1 ir
+        let field_count = 15 + self.rest_coeffs.len();
         let mut state = serializer.serialize_struct("DynamicPlyGaussian", field_count)?;
 
         state.serialize_field("x", &self.x)?;
@@ -70,6 +72,8 @@ impl Serialize for DynamicPlyGaussian {
             state.serialize_field(name, val)?;
         }
 
+        state.serialize_field("ir_intensity", &self.ir_intensity)?;
+
         state.end()
     }
 }
@@ -84,6 +88,7 @@ async fn read_splat_data(splats: Splats) -> Result<DynamicPly, ExportError> {
         .register(splats.transforms.val())
         .register(splats.raw_opacities.val())
         .register(splats.sh_coeffs.val().permute([0, 2, 1])) // Permute to inria format ([n, channel, coeffs]).
+        .register(splats.raw_ir.val()) // Pre-sigmoid raw IR (convention matches opacity)
         .execute_async()
         .await
         .map_err(|_fetch| ExportError::FetchFailed)?;
@@ -93,7 +98,7 @@ async fn read_splat_data(splats: Splats) -> Result<DynamicPly, ExportError> {
         .map(|x| x.into_vec().map_err(|_convert| ExportError::DataConversion))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let [transforms, raw_opacities, sh_coeffs]: [Vec<f32>; 3] = vecs
+    let [transforms, raw_opacities, sh_coeffs, raw_ir_vals]: [Vec<f32>; 4] = vecs
         .try_into()
         .map_err(|_convert| ExportError::DataConversion)?;
 
@@ -170,6 +175,7 @@ async fn read_splat_data(splats: Splats) -> Result<DynamicPly, ExportError> {
                 f_dc_1: sh_green[0],
                 f_dc_2: sh_blue[0],
                 rest_coeffs,
+                ir_intensity: raw_ir_vals[i],
             }
         })
         .collect();

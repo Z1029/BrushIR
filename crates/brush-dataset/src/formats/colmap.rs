@@ -7,7 +7,7 @@ use std::{
 use super::{DatasetLoadResult, FormatError};
 use crate::{
     Dataset,
-    config::LoadDatasetConfig,
+    config::LoadDataseConfig,
     formats::{find_image_by_name, find_mask_path, split_eval_every},
     scene::{LoadImage, SceneView},
 };
@@ -101,7 +101,7 @@ async fn count_registered_images(
 
 pub(crate) async fn load_dataset(
     vfs: Arc<BrushVfs>,
-    load_args: &LoadDatasetConfig,
+    load_args: &LoadDataseConfig,
 ) -> Option<Result<DatasetLoadResult, FormatError>> {
     log::info!("Loading colmap dataset");
 
@@ -121,7 +121,7 @@ pub(crate) async fn load_dataset(
 
 async fn load_dataset_inner(
     vfs: Arc<BrushVfs>,
-    load_args: &LoadDatasetConfig,
+    load_args: &LoadDataseConfig,
     cam_path: PathBuf,
     img_path: PathBuf,
 ) -> Result<DatasetLoadResult, FormatError> {
@@ -217,7 +217,7 @@ async fn load_dataset_inner(
                 load_args.alpha_mode,
             );
 
-            views.push(SceneView { camera, image });
+            views.push(SceneView { camera, image, ir_image: None, ir_camera: None });
         }
 
         let (train_views, eval_views) = split_eval_every(views, load_args.eval_split_every);
@@ -277,6 +277,7 @@ async fn load_dataset_inner(
             log_scales: None,
             sh_coeffs: Some(colors),
             raw_opacities: None,
+            raw_ir: None,
         };
 
         Some(SplatMessage {

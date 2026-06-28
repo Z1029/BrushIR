@@ -171,7 +171,7 @@ pub(crate) async fn train_stream(
     let mut eval_scene = dataset.eval;
 
     let mut train_duration = Duration::from_secs(0);
-    let mut dataloader = SceneLoader::new(&dataset.train, 42, &train_stream_config.load_config);
+    let mut dataloader = SceneLoader::new(&dataset.train, 42);
     let bounds = get_splat_bounds(init_splats.clone(), BOUND_PERCENTILE).await;
 
     // Per-train-view (world center, focal-px at native res) for the
@@ -268,9 +268,9 @@ pub(crate) async fn train_stream(
             let cumulative_scale = (lod_img_pct as f32 / 100.0).powi(current_lod as i32);
             dataloader = if lod_img_pct < 100 {
                 let lod_scene = dataset.train.clone().with_image_scale(cumulative_scale);
-                SceneLoader::new(&lod_scene, 42, &train_stream_config.load_config)
+                SceneLoader::new(&lod_scene, 42)
             } else {
-                SceneLoader::new(&dataset.train, 42, &train_stream_config.load_config)
+                SceneLoader::new(&dataset.train, 42)
             };
 
             let bounds = get_splat_bounds(splats.clone(), BOUND_PERCENTILE).await;
@@ -333,7 +333,7 @@ pub(crate) async fn train_stream(
 
         // We just finished iter 'iter', now starting iter + 1.
         let iter = iter + 1;
-        let is_last_step = iter == train_stream_config.train_config.total_iters();
+        let is_last_step = iter == train_stream_config.train_config.total_iters_without_ir();
 
         let step_dur = step_time.elapsed();
         train_duration += step_dur;
@@ -480,6 +480,125 @@ pub(crate) async fn train_stream(
         }
 
         brush_async::yield_now().await;
+    }
+
+    log::info!("Begin IR training phase");
+
+    // ── IR training phase (Stage 2) ─────────────────────────────
+    if train_stream_config.train_config.ir_iters > 0 {
+        let total_ir_iters = train_stream_config.train_config.ir_iters;
+        log::info!("Starting IR training phase: {total_ir_iters} iterations");
+
+        emitter
+            .emit(ProcessMessage::TrainMessage(TrainMessage::IrPhaseStarted {
+                total_iters: total_ir_iters,
+            }))
+            .await;
+
+        // Create a fresh dataloader for IR — we reuse the same scene but
+        // the SceneBatch carries `ir_img_packed` / `ir_camera` already.
+        let mut ir_dataloader = SceneLoader::new(&dataset.train, 42);
+
+        // IR phase uses its own training loop — no LOD, no evaluation.
+        let mut ir_train_duration = Duration::from_secs(0);
+
+        for ir_iter in 0..total_ir_iters {
+            let step_time = Instant::now();
+
+            let batch = ir_dataloader
+                .next_batch()
+                .instrument(trace_span!("Wait for IR batch"))
+                .await;
+
+            // Only train if batch has IR data.
+            if batch.ir_img_packed.is_none() || batch.ir_camera.is_none() {
+                continue;
+            }
+
+            let diff_splats =
+                brush_render_bwd::burn_glue::lift_splats_to_autodiff(splats.clone());
+            let (new_diff_splats, ir_stats) = trainer.step_ir(batch, diff_splats).await;
+            splats = new_diff_splats.valid();
+            slot.set(0, splats.clone());
+
+            let step_dur = step_time.elapsed();
+            ir_train_duration += step_dur;
+
+            // IR refine: just prune NaN / dead splats (no split/clone).
+            if total_ir_iters > 0
+                && train_stream_config.train_config.ir_refine_every > 0
+                && ir_iter > 0
+                && ir_iter.is_multiple_of(train_stream_config.train_config.ir_refine_every)
+            {
+                let (new_splats, refine_stats) = trainer.refine(ir_iter, splats).await;
+                splats = new_splats;
+                slot.set(0, splats.clone());
+
+                emitter
+                    .emit(ProcessMessage::TrainMessage(TrainMessage::IrRefineStep {
+                        cur_splat_count: refine_stats.total_splats,
+                        iter: ir_iter,
+                    }))
+                    .await;
+            }
+
+            let is_last_ir = ir_iter + 1 == total_ir_iters;
+
+            const IR_UPDATE_EVERY: u32 = 5;
+            if (ir_iter + 1) % IR_UPDATE_EVERY == 0 || is_last_ir {
+                let ir_loss_val = ir_stats
+                    .loss
+                    .clone()
+                    .into_scalar_async::<f32>()
+                    .await
+                    .unwrap_or(f32::NAN);
+                log::info!("IR step {} / {}  loss={:.6}", ir_iter + 1, total_ir_iters, ir_loss_val);
+
+                emitter
+                    .emit(ProcessMessage::TrainMessage(TrainMessage::IrTrainStep {
+                        iter: ir_iter + 1,
+                        total_elapsed: ir_train_duration,
+                        ir_loss: ir_loss_val,
+                    }))
+                    .await;
+
+                emitter
+                    .emit(ProcessMessage::SplatsUpdated {
+                        up_axis: None,
+                        frame: 0,
+                        total_frames: 1,
+                        num_splats: splats.num_splats(),
+                        sh_degree,
+                    })
+                    .await;
+            }
+
+            // Final export after IR phase.
+            #[cfg(not(target_family = "wasm"))]
+            if is_last_ir {
+                let ir_export_name = process_config
+                    .export_name
+                    .replace(".ply", "_ir.ply");
+                let res =
+                    export_checkpoint(
+                        splats.clone(),
+                        &export_path,
+                        &ir_export_name,
+                        total_ir_iters,
+                        total_ir_iters,
+                    )
+                    .await
+                    .with_context(|| "IR final export failed");
+
+                if let Err(error) = res {
+                    emitter.emit(ProcessMessage::Warning { error }).await;
+                }
+            }
+
+            brush_async::yield_now().await;
+        }
+
+        log::info!("IR training phase complete");
     }
 
     emitter

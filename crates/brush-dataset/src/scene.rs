@@ -17,6 +17,10 @@ pub enum ViewType {
 pub struct SceneView {
     pub image: LoadImage,
     pub camera: Camera,
+    /// Optional IR image for the same viewpoint (loaded from ir/ subdir).
+    pub ir_image: Option<LoadImage>,
+    /// Camera for IR sensor (RGB camera + fixed offset extrinsics).
+    pub ir_camera: Option<Camera>,
 }
 
 // Encapsulates a multi-view scene including cameras and the splats.
@@ -63,7 +67,9 @@ impl Scene {
             .into_iter()
             .map(|v| SceneView {
                 image: v.image.with_scale(scale),
+                ir_image: v.ir_image.map(|img| img.with_scale(scale)),
                 camera: v.camera,
+                ir_camera: v.ir_camera,
             })
             .collect();
         Self::new(views)
@@ -148,10 +154,23 @@ pub struct SceneBatch {
     pub has_alpha: bool,
     pub alpha_mode: AlphaMode,
     pub camera: Camera,
+    /// Packed IR ground truth `[H, W]` u32 (same packing as img_packed, R channel = IR).
+    pub ir_img_packed: Option<TensorData>,
+    /// Camera for the IR sensor (RGB camera + fixed offset extrinsics).
+    pub ir_camera: Option<Camera>,
 }
 
 impl SceneBatch {
     pub fn img_size(&self) -> [usize; 2] {
         [self.img_packed.shape[0], self.img_packed.shape[1]]
+    }
+}
+
+/// Compute the IR camera from an RGB camera and a fixed translation+rotation offset.
+pub fn compute_ir_camera(rgb_camera: &Camera, translation: glam::Vec3, rotation: glam::Quat) -> Camera {
+    Camera {
+        position: rgb_camera.position + rgb_camera.rotation * translation,
+        rotation: (rgb_camera.rotation * rotation).normalize(),
+        ..rgb_camera.clone()
     }
 }

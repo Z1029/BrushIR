@@ -33,6 +33,8 @@ pub struct SplatData {
     pub log_scales: Option<Vec<f32>>,
     pub sh_coeffs: Option<Vec<f32>>,
     pub raw_opacities: Option<Vec<f32>>,
+    /// Pre-sigmoid IR intensity values. None if PLY has no ir_intensity field.
+    pub raw_ir: Option<Vec<f32>>,
 }
 
 impl SplatData {
@@ -70,6 +72,7 @@ impl SplatData {
             log_scales: self.log_scales.as_deref().map(|v| pick(v, 3)),
             sh_coeffs: self.sh_coeffs.as_deref().map(|v| pick(v, sh_stride)),
             raw_opacities: self.raw_opacities.as_deref().map(|v| pick(v, 1)),
+            raw_ir: self.raw_ir.as_deref().map(|v| pick(v, 1)),
         }
     }
 
@@ -84,9 +87,11 @@ impl SplatData {
         let opacities = self
             .raw_opacities
             .unwrap_or_else(|| vec![inverse_sigmoid(0.5); n_splats]);
+        // raw_ir defaults to 0.0 (pre-sigmoid → sigmoid(0) = 0.5 intensity)
+        let raw_ir = self.raw_ir.unwrap_or_else(|| vec![0.0; n_splats]);
 
-        Splats::from_raw(
-            self.means, rotations, log_scales, sh_coeffs, opacities, mode, device,
+        Splats::from_raw_with_ir(
+            self.means, rotations, log_scales, sh_coeffs, opacities, raw_ir, mode, device,
         )
     }
 }
@@ -325,6 +330,9 @@ async fn parse_ply<T: AsyncRead + Unpin>(
         raw_opacities: vertex
             .has_property("opacity")
             .then(|| vec_exact(max_splats)),
+        raw_ir: vertex
+            .has_property("ir_intensity")
+            .then(|| vec_exact(max_splats)),
     };
 
     let mut row_index: usize = 0;
@@ -366,6 +374,9 @@ async fn parse_ply<T: AsyncRead + Unpin>(
             }
             if let Some(opacity) = &mut data.raw_opacities {
                 opacity.push(gauss.opacity);
+            }
+            if let Some(ir) = &mut data.raw_ir {
+                ir.push(gauss.ir_intensity.unwrap_or(0.0));
             }
         })
         .deserialize(&mut *file)?;
@@ -530,6 +541,7 @@ async fn parse_compressed_ply<T: AsyncRead + Unpin>(
                 log_scales: Some(log_scales.clone()),
                 sh_coeffs: Some(sh_coeffs.clone()),
                 raw_opacities: Some(opacity.clone()),
+                raw_ir: None,
             };
             emitter.emit(SplatMessage { meta, data }).await;
         }
@@ -579,6 +591,7 @@ async fn parse_compressed_ply<T: AsyncRead + Unpin>(
             log_scales: Some(log_scales),
             sh_coeffs: Some(total_coeffs),
             raw_opacities: Some(opacity),
+            raw_ir: None,
         };
         emitter.emit(SplatMessage { meta, data }).await;
     }
@@ -668,6 +681,7 @@ mod tests {
             log_scales: Some(make(3)),
             sh_coeffs: Some(make(6)),
             raw_opacities: Some(make(1)),
+            raw_ir: None,
         };
 
         // Within budget: untouched.

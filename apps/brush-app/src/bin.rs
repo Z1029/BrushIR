@@ -13,6 +13,15 @@ fn main() -> Result<(), anyhow::Error> {
 
     let args = Cli::parse().validate()?;
 
+    env_logger::Builder::new()
+    .target(env_logger::Target::Stdout)
+    .filter_level(log::LevelFilter::Info)  // 直接设置显示 info 及以上
+    .init();
+
+    log::info!("------------------------------------------------------");
+    log::info!("Welcome to brush with IR enhanced. By Z1029\n\n");
+    log::info!("------------------------------------------------------ \n\n");
+
     #[cfg(target_family = "windows")]
     {
         use winapi::um::wincon::GetConsoleProcessList;
@@ -24,9 +33,9 @@ fn main() -> Result<(), anyhow::Error> {
 
         if args.with_viewer && !is_console {
             // Safety: FFI
-            unsafe {
-                winapi::um::wincon::FreeConsole();
-            };
+            //unsafe {
+                //winapi::um::wincon::FreeConsole();
+            //};
         }
     }
 
@@ -50,10 +59,11 @@ fn main() -> Result<(), anyhow::Error> {
             if args.with_viewer {
                 use crate::ui::app::App;
 
-                let logger = env_logger::Builder::from_default_env()
+                let logger = log::logger();
+                /*env_logger::Builder::from_default_env()
                     .target(env_logger::Target::Stdout)
-                    .build();
-                let max = logger.filter();
+                    .build();*/
+                let max = log::LevelFilter::Info;//logger.filter();
                 crate::ui::log_panel::install_global_logger(Box::new(logger), max);
 
                 let icon = eframe::icon_data::from_png_bytes(
@@ -72,9 +82,9 @@ fn main() -> Result<(), anyhow::Error> {
                 };
 
                 let title = if cfg!(debug_assertions) {
-                    "Brush  -  Debug"
+                    "Brush IR -  Debug"
                 } else {
-                    "Brush"
+                    "Brush IR"
                 };
 
                 eframe::run_native(

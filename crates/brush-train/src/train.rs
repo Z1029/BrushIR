@@ -13,7 +13,7 @@ use brush_dataset::scene::SceneBatch;
 use brush_loss::{ImageLossConfig, image_loss};
 use brush_render::gaussian_splats::Splats;
 use brush_render::{AlphaMode, bounding_box::BoundingBox, sh::sh_coeffs_for_degree};
-use brush_render_bwd::render_splats;
+use brush_render_bwd::{render_ir_splats, render_splats};
 use burn::{
     backend::wgpu::{AutoCompiler, WgpuDevice, WgpuRuntime},
     lr_scheduler::{
@@ -411,6 +411,77 @@ impl SplatTrainer {
         (splats, stats)
     }
 
+    /// Single IR training step — only optimises `raw_ir`.
+    ///
+    /// All geometry parameters (transforms, SH, opacity) are frozen.
+    /// Uses L1 loss only (no SSIM). No noise injection, no growth.
+    pub async fn step_ir(
+        &mut self,
+        batch: SceneBatch,
+        mut splats: Splats,
+    ) -> (Splats, TrainStepStats) {
+        let ir_img_packed = batch
+            .ir_img_packed
+            .clone()
+            .expect("step_ir requires IR ground truth");
+        let camera = batch.ir_camera.expect("step_ir requires IR camera");
+
+        self.step_count += 1;
+
+        let [img_h, img_w] = batch.img_size();
+        let img_size = glam::uvec2(img_w as u32, img_h as u32);
+        let base = &self.config.background_color;
+        let base_bg = glam::Vec3::new(base[0], base[1], base[2]);
+        let background = sample_background_color(base_bg, self.config.background_noise_strength);
+
+        let device = splats.device();
+        let gt_packed: Tensor<2, Int> = Tensor::from_data(ir_img_packed, &device.clone().inner());
+
+        let (mut grads, num_visible, loss_inner) = {
+            let render_input = splats.clone();
+            let diff_out = render_ir_splats(render_input, &camera, img_size, background)
+                .instrument(trace_span!("IrForward"))
+                .await;
+
+            let pred_image = diff_out.img;
+
+            // L1 loss only (IR is grayscale, no SSIM).
+            let cfg = ImageLossConfig {
+                l1_weight: 1.0,
+                ssim_weight: 0.0,
+                composite_bg: None,
+                mask: false,
+            };
+            let loss = image_loss(pred_image.slice(s![.., .., 0..3]), gt_packed, cfg).mean();
+            let loss_inner = loss.clone().inner();
+            let grads = splats.bwd_validate(loss).await;
+
+            (grads, diff_out.num_visible, loss_inner)
+        };
+
+        let optimizer = self.optim.get_or_insert_with(create_optimizer_from_config);
+
+        // Only step raw_ir — other params are frozen.
+        let lr_ir = self.config.lr_ir;
+        splats = trace_span!("IrOptimizerStep").in_scope(|| {
+            let grad_ir =
+                GradientsParams::from_params(&mut grads, &splats, &[splats.raw_ir.id]);
+            optimizer.step(lr_ir, splats, grad_ir)
+        });
+
+        let stats = TrainStepStats {
+            num_visible,
+            lr_mean: 0.0, // unused for IR
+            lr_rotation: 0.0,
+            lr_scale: 0.0,
+            lr_coeffs: 0.0,
+            lr_opac: 0.0,
+            loss: loss_inner,
+        };
+
+        (splats, stats)
+    }
+
     pub async fn refine(&mut self, iter: u32, splats: Splats) -> (Splats, RefineStats) {
         let progress = iter as f32 / self.config.total_train_iters.max(1) as f32;
         // Refine manipulates the canonical (un-floored) params, so bake the
@@ -676,6 +747,7 @@ impl SplatTrainer {
             let cur_log_scale = cur_transforms.slice(s![.., 7..10]);
             let cur_sh_coeffs = splats.sh_coeffs.val().select(0, refine_inds.clone());
             let cur_raw_opac = splats.raw_opacities.val().select(0, refine_inds.clone());
+            let cur_raw_ir = splats.raw_ir.val().select(0, refine_inds.clone());
 
             let cur_scales = cur_log_scale.clone().exp();
 
@@ -759,6 +831,7 @@ impl SplatTrainer {
                 |x| Tensor::cat(vec![x, new_transforms], 0),
                 |x| Tensor::cat(vec![x, cur_sh_coeffs], 0),
                 |x| Tensor::cat(vec![x, new_raw_opac], 0),
+                |x: Tensor<1>| Tensor::cat(vec![x, cur_raw_ir.clone()], 0),
                 |x: Tensor<2>| {
                     let d1 = x.dims()[1];
                     let neg_parent = -x.clone().select(0, refine_inds_opt.clone());
@@ -778,6 +851,16 @@ impl SplatTrainer {
                         vec![x, Tensor::zeros([refine_count, d1, d2], &opt_device)],
                         0,
                     )
+                },
+                |x: Tensor<1>| {
+                    let neg_parent = -x.clone().select(0, refine_inds_opt.clone());
+                    let x = x.scatter(
+                        0,
+                        refine_inds_opt.clone(),
+                        neg_parent,
+                        IndexingUpdateOp::Add,
+                    );
+                    Tensor::cat(vec![x, Tensor::zeros([refine_count], &opt_device)], 0)
                 },
                 |x: Tensor<1>| {
                     let neg_parent = -x.clone().select(0, refine_inds_opt.clone());
@@ -813,10 +896,12 @@ fn map_splats_and_opt(
     map_transforms: impl FnOnce(Tensor<2>) -> Tensor<2>,
     map_sh_coeffs: impl FnOnce(Tensor<3>) -> Tensor<3>,
     map_opac: impl FnOnce(Tensor<1>) -> Tensor<1>,
+    map_raw_ir: impl FnOnce(Tensor<1>) -> Tensor<1>,
 
     map_opt_transforms: impl Fn(Tensor<2>) -> Tensor<2>,
     map_opt_sh_coeffs: impl Fn(Tensor<3>) -> Tensor<3>,
     map_opt_opac: impl Fn(Tensor<1>) -> Tensor<1>,
+    map_opt_raw_ir: impl Fn(Tensor<1>) -> Tensor<1>,
 ) -> Splats {
     splats.transforms = splats.transforms.map(map_transforms);
     map_opt(splats.transforms.id, record, &map_opt_transforms);
@@ -824,6 +909,8 @@ fn map_splats_and_opt(
     map_opt(splats.sh_coeffs.id, record, &map_opt_sh_coeffs);
     splats.raw_opacities = splats.raw_opacities.map(map_opac);
     map_opt(splats.raw_opacities.id, record, &map_opt_opac);
+    splats.raw_ir = splats.raw_ir.map(map_raw_ir);
+    map_opt(splats.raw_ir.id, record, &map_opt_raw_ir);
     splats
 }
 
@@ -835,10 +922,10 @@ fn map_opt<const D: usize>(
     record: &mut HashMap<ParamId, AdaptorRecord<AdamScaled>>,
     map_fn: &impl Fn(Tensor<D>) -> Tensor<D>,
 ) {
-    let mut state: AdamState<D> = record
-        .remove(&param_id)
-        .expect("failed to get optimizer record")
-        .into_state();
+    let Some(adaptor) = record.remove(&param_id) else {
+        return; // No optimizer state for this param (e.g., raw_ir before IR training)
+    };
+    let mut state: AdamState<D> = adaptor.into_state();
 
     state.momentum = state.momentum.map(|mut moment| {
         moment.moment_1 = map_fn(moment.moment_1);
@@ -888,6 +975,8 @@ async fn prune_points(
         splats = map_splats_and_opt(
             splats,
             record,
+            |x| x.select(0, valid_inds.clone()),
+            |x| x.select(0, valid_inds.clone()),
             |x| x.select(0, valid_inds.clone()),
             |x| x.select(0, valid_inds.clone()),
             |x| x.select(0, valid_inds.clone()),
