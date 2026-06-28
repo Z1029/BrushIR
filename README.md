@@ -7,15 +7,15 @@
 ## Features
 
 - 支持红外+RGB双模态输入<br>![image-20260628133527278](./README.assets/image-20260628133527278.png)![image-20260628133542641](./README.assets/image-20260628133542641.png)
-- 可自定义红外相机与RGB相机的偏移距离和角度<br><img src="./README.assets/image-20260628133640019.png" alt="image-20260628133640019" style="zoom:33%;" />
-- RGB训练完成后，使用红外数据进行位置强化<br><img src="./README.assets/image-20260628133736457.png" alt="image-20260628133736457" style="zoom: 33%;" />
+- 可自定义红外相机与RGB相机的偏移距离和角度<br><img src="./README.assets/image-20260628133640019.png" alt="image-20260628133640019" style="zoom:13%;" />
+- RGB训练完成后，使用红外数据进行位置强化<br><img src="./README.assets/image-20260628133736457.png" alt="image-20260628133736457" style="zoom: 13%;" />
 
 ## Usage
 
-- 将NIR数据集放在RGB图片的子目录下<br><img src="./README.assets/image-20260628134016719.png" alt="image-20260628134016719" style="zoom:33%;" />
-- 选择Directory，加载一个包含colmap、RGB图集、IR图集的文件夹<br><img src="./README.assets/image-20260628133854502.png" alt="image-20260628133854502" style="zoom: 25%;" /><br><img src="./README.assets/image-20260628134104814.png" alt="image-20260628134104814" style="zoom: 50%;" />
-- 勾选Enable IR training，设置参数<br><img src="./README.assets/image-20260628134302207.png" alt="image-20260628134302207" style="zoom: 15%;" />
-- Start！<br><img src="./README.assets/image-20260628134339998.png" alt="image-20260628134339998" style="zoom:33%;" />
+- 将NIR数据集放在RGB图片的子目录下<br><img src="./README.assets/image-20260628134016719.png" alt="image-20260628134016719" style="zoom:13%;" />
+- 选择Directory，加载一个包含colmap、RGB图集、IR图集的文件夹<br><img src="./README.assets/image-20260628133854502.png" alt="image-20260628133854502" style="zoom: 15%;" /><br><img src="./README.assets/image-20260628134104814.png" alt="image-20260628134104814" style="zoom: 20%;" />
+- 勾选Enable IR training，设置参数<br><img src="./README.assets/image-20260628134302207.png" alt="image-20260628134302207" style="zoom: 5%;" />
+- Start！<br><img src="./README.assets/image-20260628134339998.png" alt="image-20260628134339998" style="zoom:15%;" />
 
 ## Build
 
